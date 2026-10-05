@@ -1,0 +1,28 @@
+{
+  "name": "Indianos/alt-dto",
+  "description": "Framework-agnostic DTO hydration and serialization library",
+  "type": "library",
+  "license": "MIT",
+  "require": {
+    "php": "^8.2",
+    "psr/simple-cache": "^2.0 || ^3.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^13.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "AltDTO\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "AltDTO\\Tests\\": "tests/"
+    }
+  },
+  "scripts": {
+    "test": "phpunit -c .build/phpunit.xml"
+  },
+  "minimum-stability": "stable",
+  "prefer-stable": true
+}

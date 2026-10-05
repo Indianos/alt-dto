@@ -1,0 +1,144 @@
+name: AI classify diff for semver
+description: >
+  Sends a diff to an LLM and asks it to classify the change as patch / minor /
+  major per semver rules, scoped to what's actually allowed on the target
+  release branch. This is the only AI-consuming step in the release
+  pipelines; keep it isolated here so it is invoked exactly once per
+  branch/release instead of being duplicated across jobs.
+
+inputs:
+  diff-file:
+    description: Path to a unified diff to classify
+    required: true
+  commits-file:
+    description: >
+      Path to a plain-text log of the commits included in this diff (e.g.
+      `git log --oneline`). Commit messages often state intent ("fix:",
+      "feat!:", "BREAKING CHANGE") that isn't visible in the code diff alone,
+      so they're passed alongside it as extra classification context.
+    required: false
+    default: ""
+  branch:
+    description: Release branch name (for prompt context only)
+    required: true
+  branch-type:
+    description: "floating-minor (vX, allows new minors) or locked-minor (vX.Y, patches only)"
+    required: true
+  api-key:
+    description: API key for the AI provider
+    required: true
+  api-url:
+    description: Chat-completions-compatible endpoint
+    required: false
+    default: https://api.openai.com/v1/chat/completions
+  model:
+    description: Model name
+    required: false
+    default: gpt-4o-mini
+
+outputs:
+  bump-type:
+    description: "none | patch | minor | major, as judged by the AI"
+    value: ${{ steps.classify.outputs.bump-type }}
+  is-breaking:
+    value: ${{ steps.classify.outputs.is-breaking }}
+  summary:
+    description: Human-readable justification, surfaced in release notes / failure messages
+    value: ${{ steps.classify.outputs.summary }}
+
+runs:
+  using: composite
+  steps:
+    - id: classify
+      shell: bash
+      env:
+        # Passed via env (not interpolated directly into the script) so the
+        # secret value never appears inline in the composed command/log.
+        AI_API_KEY: ${{ inputs.api-key }}
+      run: |
+        set -euo pipefail
+
+        if [[ ! -s "${{ inputs.diff-file }}" ]]; then
+          echo "bump-type=none" >> "$GITHUB_OUTPUT"
+          echo "is-breaking=false" >> "$GITHUB_OUTPUT"
+          echo "summary=No effective changes to classify." >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        rules="This repository follows semantic versioning (semver.org)."
+        if [[ "${{ inputs.branch-type }}" == "locked-minor" ]]; then
+          rules="$rules Branch '${{ inputs.branch }}' is a LOCKED MINOR release branch: it may only ever receive PATCH releases (bugfixes, docs, internal refactors, performance fixes that do not change public behavior). Any new feature or breaking change on this branch is a policy violation."
+        else
+          rules="$rules Branch '${{ inputs.branch }}' is a FLOATING MINOR release branch: it may receive PATCH releases (bugfixes) or MINOR releases (new, backwards-compatible features/additions to the public API). It must NEVER receive a MAJOR/breaking change, since the major version is fixed by the branch name."
+        fi
+
+        system_prompt=$(cat <<EOF
+        You are a strict release engineer. Classify a set of commits and their unified
+        diff against semantic versioning rules. $rules
+
+        Commit messages are supplied alongside the diff because they often state intent
+        explicitly (e.g. "fix:", "feat:", "feat!:", "BREAKING CHANGE:") that may not be
+        obvious from the code change alone. Treat an explicit breaking-change marker in a
+        commit message as conclusive, even if the diff looks small; but don't let a vague
+        or sloppy commit message override what the diff clearly shows.
+
+        Respond with ONLY a compact JSON object, no markdown fences, matching exactly:
+        {"bump_type": "patch|minor|major|none", "is_breaking": true|false, "summary": "one or two sentences"}
+
+        Classification guide:
+        - "patch": bugfixes, internal refactors, docs changes, performance improvements with no public API change.
+        - "minor": new, backwards-compatible public API additions or features.
+        - "major": any backwards-incompatible / breaking change to the public API.
+        - "none": no effective changes (empty diff, whitespace-only, or only comments/tests/CI changes).
+        EOF
+        )
+
+        commits_file="${{ inputs.commits-file }}"
+        if [[ -n "$commits_file" && -s "$commits_file" ]]; then
+          commits_content=$(cat "$commits_file")
+        else
+          commits_content="(no commit log provided)"
+        fi
+
+        payload=$(jq -n \
+          --arg model "${{ inputs.model }}" \
+          --arg system "$system_prompt" \
+          --arg commits "$commits_content" \
+          --rawfile diff "${{ inputs.diff-file }}" \
+          '{
+            model: $model,
+            temperature: 0,
+            response_format: {type: "json_object"},
+            messages: [
+              {role: "system", content: $system},
+              {role: "user", content: ("Commit log:\n\n" + $commits + "\n\nDiff:\n\n" + $diff)}
+            ]
+          }')
+
+        response=$(curl -sS -X POST "${{ inputs.api-url }}" \
+          --oauth2-bearer "$AI_API_KEY" \
+          -H "Content-Type: application/json" \
+          -d "$payload")
+
+        content=$(echo "$response" | jq -r '.choices[0].message.content // empty')
+        if [[ -z "$content" ]]; then
+          echo "::error::AI classification returned no content. Raw response: $response"
+          exit 1
+        fi
+
+        bump_type=$(echo "$content" | jq -r '.bump_type // empty')
+        is_breaking=$(echo "$content" | jq -r '.is_breaking // false')
+        summary=$(echo "$content" | jq -r '.summary // ""')
+
+        if [[ ! "$bump_type" =~ ^(patch|minor|major|none)$ ]]; then
+          echo "::error::AI returned an unrecognized bump_type: '$bump_type'. Raw content: $content"
+          exit 1
+        fi
+
+        {
+          echo "bump-type=$bump_type"
+          echo "is-breaking=$is_breaking"
+          echo "summary<<AI_SUMMARY_EOF"
+          echo "$summary"
+          echo "AI_SUMMARY_EOF"
+        } >> "$GITHUB_OUTPUT"

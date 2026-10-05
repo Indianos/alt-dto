@@ -1,0 +1,101 @@
+name: Backport to release branches
+
+# When main moves forward, try to fast-forward every active release line with
+# the same change. We deliberately do NOT run AI classification here: a clean
+# cherry-pick is just pushed to the target branch, and that push re-triggers
+# `release.yml`, which is the single place that calls the AI and enforces
+# semver policy. This keeps the (expensive) AI call to at most one invocation
+# per branch that actually ends up with releasable content, run in parallel
+# across branches by GitHub's own concurrent workflow runs.
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  # Static/shared discovery, computed exactly once for every branch in the
+  # matrix below instead of being re-resolved per branch.
+  discover:
+    name: Discover active release branches
+    runs-on: ubuntu-latest
+    outputs:
+      branches: ${{ steps.list.outputs.branches }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List vX / vX.Y branches, excluding ones marked obsolete
+        id: list
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          gh api "repos/${{ github.repository }}/branches" --paginate -q '.[].name' \
+            | grep -E '^v[0-9]+(\.[0-9]+)?$' > candidates.txt || true
+
+          obsolete_file=".github/release-branches.json"
+          if [[ -f "$obsolete_file" ]]; then
+            jq -r '.obsolete[]? // empty' "$obsolete_file" > obsolete.txt
+          else
+            : > obsolete.txt
+          fi
+
+          comm -23 <(sort -u candidates.txt) <(sort -u obsolete.txt) > active.txt
+          branches_json=$(jq -R . active.txt | jq -sc 'map(select(length > 0))')
+
+          echo "branches=$branches_json" >> "$GITHUB_OUTPUT"
+          echo "Active release branches: $branches_json"
+
+  backport:
+    name: Cherry-pick onto ${{ matrix.branch }}
+    needs: discover
+    if: needs.discover.outputs.branches != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        branch: ${{ fromJson(needs.discover.outputs.branches) }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ matrix.branch }}
+
+      - name: Determine commit range introduced by this push
+        id: range
+        run: |
+          set -euo pipefail
+          before="${{ github.event.before }}"
+          sha="${{ github.sha }}"
+          if [[ -z "$before" || "$before" =~ ^0+$ ]]; then
+            # First push seen on main (or a force-push) - fall back to the
+            # single tip commit rather than guessing a huge range.
+            echo "range=${sha}~1..${sha}" >> "$GITHUB_OUTPUT"
+          else
+            echo "range=${before}..${sha}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attempt cherry-pick (no AI - pure git conflict check)
+        id: pick
+        run: |
+          set +e
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git cherry-pick --allow-empty -x ${{ steps.range.outputs.range }}
+          status=$?
+
+          if [[ $status -ne 0 ]]; then
+            git cherry-pick --abort >/dev/null 2>&1 || true
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Cherry-picking ${{ github.sha }} onto '${{ matrix.branch }}' conflicts; skipping automatic backport. Please cherry-pick and resolve manually."
+          else
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push backport (triggers release.yml for this branch)
+        if: steps.pick.outputs.clean == 'true'
+        run: git push origin HEAD:refs/heads/${{ matrix.branch }}

@@ -1,0 +1,121 @@
+name: Validate semver policy and cut release
+description: >
+  Given the AI's bump_type judgement, enforces the branch's semver policy
+  (locked-minor vX.Y => patch only, floating-minor vX => patch/minor only,
+  never major), computes the next version tag, and publishes the GitHub
+  release. Fails loudly (without touching git) when the change is not
+  relevant to what the branch is allowed to ship.
+
+inputs:
+  branch:
+    required: true
+  branch-type:
+    required: true
+    description: floating-minor | locked-minor
+  major:
+    required: true
+  minor:
+    required: false
+    default: ""
+  base-tag:
+    required: false
+    default: ""
+  bump-type:
+    required: true
+    description: none | patch | minor | major
+  is-breaking:
+    required: false
+    default: "false"
+  ai-summary:
+    required: false
+    default: ""
+  github-token:
+    required: true
+
+outputs:
+  version:
+    value: ${{ steps.version.outputs.version }}
+  released:
+    value: ${{ steps.version.outputs.released }}
+
+runs:
+  using: composite
+  steps:
+    - id: policy
+      shell: bash
+      run: |
+        set -euo pipefail
+        bump="${{ inputs.bump-type }}"
+        breaking="${{ inputs.is-breaking }}"
+
+        if [[ "$bump" == "none" ]]; then
+          echo "::notice::No releasable changes found on '${{ inputs.branch }}' since the last release; skipping."
+          echo "skip=true" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        if [[ "$bump" == "major" || "$breaking" == "true" ]]; then
+          echo "::error::Rejected: this change is classified as a BREAKING/major change, which is never allowed on a release branch (major is fixed once a vX branch is cut). AI summary: ${{ inputs.ai-summary }}"
+          exit 1
+        fi
+
+        if [[ "${{ inputs.branch-type }}" == "locked-minor" && "$bump" == "minor" ]]; then
+          echo "::error::Rejected: '${{ inputs.branch }}' is a locked minor-version branch (patches only), but the diff was classified as a new MINOR feature. Cherry-pick it onto a floating 'v${{ inputs.major }}' branch instead. AI summary: ${{ inputs.ai-summary }}"
+          exit 1
+        fi
+
+        echo "skip=false" >> "$GITHUB_OUTPUT"
+
+    - id: version
+      if: steps.policy.outputs.skip != 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        base_tag="${{ inputs.base-tag }}"
+        bump="${{ inputs.bump-type }}"
+        major="${{ inputs.major }}"
+        minor="${{ inputs.minor }}"
+
+        if [[ -z "$base_tag" ]]; then
+          # First release on this line.
+          if [[ "${{ inputs.branch-type }}" == "locked-minor" ]]; then
+            next="v${major}.${minor}.0"
+          else
+            next="v${major}.0.0"
+          fi
+        else
+          IFS='.' read -r b_major b_minor b_patch <<< "${base_tag#v}"
+          if [[ "$bump" == "minor" ]]; then
+            next="v${b_major}.$((b_minor + 1)).0"
+          else
+            next="v${b_major}.${b_minor}.$((b_patch + 1))"
+          fi
+        fi
+
+        echo "version=$next" >> "$GITHUB_OUTPUT"
+        echo "released=true" >> "$GITHUB_OUTPUT"
+
+    - name: Tag and publish GitHub release
+      if: steps.policy.outputs.skip != 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+      run: |
+        set -euo pipefail
+        version="${{ steps.version.outputs.version }}"
+
+        git tag -a "$version" -m "Release $version (${{ inputs.bump-type }}) from ${{ inputs.branch }}"
+        git push origin "$version"
+
+        notes=$(cat <<EOF
+        **Bump type:** ${{ inputs.bump-type }}
+        **Branch:** ${{ inputs.branch }}
+
+        ${{ inputs.ai-summary }}
+        EOF
+        )
+
+        gh release create "$version" \
+          --title "$version" \
+          --notes "$notes" \
+          --target "${{ inputs.branch }}"

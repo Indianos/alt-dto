@@ -1,0 +1,4 @@
+{
+  "$comment": "Release branches (vX or vX.Y) matching the pattern are auto-discovered from live GitHub branches by .github/workflows/backport.yml. List any that should be excluded from the main -> branches backport fan-out (e.g. a minor line that is no longer maintained) under 'obsolete'.",
+  "obsolete": []
+}

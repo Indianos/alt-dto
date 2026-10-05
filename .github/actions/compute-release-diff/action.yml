@@ -1,0 +1,95 @@
+name: Compute release diff
+description: >
+  Resolves a release-branch name into its semver line (floating-minor "vX" or
+  locked-minor "vX.Y"), finds the most recent tag already released on that
+  line, and materializes the diff between that tag and the current HEAD.
+  Centralized here so the (potentially large) diff/log is computed exactly
+  once and shared with every downstream job via outputs + an artifact,
+  instead of every matrix branch re-cloning and re-diffing independently.
+
+inputs:
+  branch:
+    description: Release branch name, e.g. "v2" or "v2.1"
+    required: true
+  head-ref:
+    description: Commit/ref to diff up to
+    required: true
+    default: HEAD
+
+outputs:
+  branch-type:
+    description: "floating-minor (vX) or locked-minor (vX.Y)"
+    value: ${{ steps.resolve.outputs.branch-type }}
+  major:
+    value: ${{ steps.resolve.outputs.major }}
+  minor:
+    value: ${{ steps.resolve.outputs.minor }}
+  base-tag:
+    description: Latest existing release tag on this line, empty if none yet
+    value: ${{ steps.resolve.outputs.base-tag }}
+  diff-file:
+    description: Path to the generated unified diff
+    value: ${{ steps.diff.outputs.diff-file }}
+  commit-count:
+    value: ${{ steps.diff.outputs.commit-count }}
+  has-changes:
+    value: ${{ steps.diff.outputs.has-changes }}
+
+runs:
+  using: composite
+  steps:
+    - id: resolve
+      shell: bash
+      run: |
+        set -euo pipefail
+        branch="${{ inputs.branch }}"
+
+        if [[ "$branch" =~ ^v([0-9]+)$ ]]; then
+          major="${BASH_REMATCH[1]}"
+          echo "branch-type=floating-minor" >> "$GITHUB_OUTPUT"
+          echo "major=$major" >> "$GITHUB_OUTPUT"
+          echo "minor=" >> "$GITHUB_OUTPUT"
+          # Any released patch under this major, any minor.
+          tag_pattern="^v${major}\.[0-9]+\.[0-9]+$"
+        elif [[ "$branch" =~ ^v([0-9]+)\.([0-9]+)$ ]]; then
+          major="${BASH_REMATCH[1]}"
+          minor="${BASH_REMATCH[2]}"
+          echo "branch-type=locked-minor" >> "$GITHUB_OUTPUT"
+          echo "major=$major" >> "$GITHUB_OUTPUT"
+          echo "minor=$minor" >> "$GITHUB_OUTPUT"
+          # Only patches under this exact major.minor.
+          tag_pattern="^v${major}\.${minor}\.[0-9]+$"
+        else
+          echo "::error::'$branch' does not match the vX or vX.Y release-branch pattern"
+          exit 1
+        fi
+
+        base_tag=$(git tag -l | grep -E "$tag_pattern" | sort -V | tail -n1 || true)
+        echo "base-tag=${base_tag}" >> "$GITHUB_OUTPUT"
+
+    - id: diff
+      shell: bash
+      run: |
+        set -euo pipefail
+        base_tag="${{ steps.resolve.outputs.base-tag }}"
+        head_ref="${{ inputs.head-ref }}"
+        diff_file="release-diff.patch"
+
+        if [[ -n "$base_tag" ]]; then
+          base_ref="$base_tag"
+        else
+          # First ever release on this line: diff against the branch root.
+          base_ref=$(git rev-list --max-parents=0 "$head_ref" | tail -n1)
+        fi
+
+        git diff "${base_ref}..${head_ref}" -- . ':!composer.lock' > "$diff_file"
+        git log --oneline "${base_ref}..${head_ref}" > release-commits.txt
+
+        commit_count=$(wc -l < release-commits.txt | tr -d ' ')
+        echo "diff-file=$diff_file" >> "$GITHUB_OUTPUT"
+        echo "commit-count=$commit_count" >> "$GITHUB_OUTPUT"
+        if [[ "$commit_count" -gt 0 ]]; then
+          echo "has-changes=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "has-changes=false" >> "$GITHUB_OUTPUT"
+        fi

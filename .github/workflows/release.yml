@@ -1,0 +1,103 @@
+name: Release branch
+
+# Direct releases cut from a version branch itself. A push here means a PR
+# was merged straight into that release line (hotfix authored on-branch, or a
+# backport commit landed via the "Backport to release branches" workflow).
+on:
+  push:
+    branches:
+      - 'v[0-9]+'
+      - 'v[0-9]+.[0-9]+'
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  # Static/shared work, computed exactly once and fanned out to the jobs
+  # below via outputs - never recomputed per-matrix-entry.
+  test:
+    name: Run test suite
+    uses: ./.github/workflows/ci.yml
+
+  prepare:
+    name: Resolve branch + diff
+    runs-on: ubuntu-latest
+    outputs:
+      branch-type: ${{ steps.diff.outputs.branch-type }}
+      major: ${{ steps.diff.outputs.major }}
+      minor: ${{ steps.diff.outputs.minor }}
+      base-tag: ${{ steps.diff.outputs.base-tag }}
+      has-changes: ${{ steps.diff.outputs.has-changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - id: diff
+        uses: ./.github/actions/compute-release-diff
+        with:
+          branch: ${{ github.ref_name }}
+          head-ref: ${{ github.sha }}
+
+      - name: Upload diff for the classify job
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-diff
+          path: |
+            release-diff.patch
+            release-commits.txt
+          retention-days: 7
+
+  # Only one AI call per push - never duplicated across a matrix.
+  classify:
+    name: AI semver classification
+    needs: prepare
+    if: needs.prepare.outputs.has-changes == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      bump-type: ${{ steps.classify.outputs.bump-type }}
+      is-breaking: ${{ steps.classify.outputs.is-breaking }}
+      summary: ${{ steps.classify.outputs.summary }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-diff
+
+      - id: classify
+        uses: ./.github/actions/ai-classify-diff
+        with:
+          diff-file: release-diff.patch
+          commits-file: release-commits.txt
+          branch: ${{ github.ref_name }}
+          branch-type: ${{ needs.prepare.outputs.branch-type }}
+          api-key: ${{ secrets.AI_API_KEY }}
+          api-url: ${{ vars.AI_API_URL }}
+          model: ${{ vars.AI_MODEL }}
+
+  release:
+    name: Validate semver policy & publish release
+    needs: [test, prepare, classify]
+    if: needs.prepare.outputs.has-changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/cut-release
+        with:
+          branch: ${{ github.ref_name }}
+          branch-type: ${{ needs.prepare.outputs.branch-type }}
+          major: ${{ needs.prepare.outputs.major }}
+          minor: ${{ needs.prepare.outputs.minor }}
+          base-tag: ${{ needs.prepare.outputs.base-tag }}
+          bump-type: ${{ needs.classify.outputs.bump-type }}
+          is-breaking: ${{ needs.classify.outputs.is-breaking }}
+          ai-summary: ${{ needs.classify.outputs.summary }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
