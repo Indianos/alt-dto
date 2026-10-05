@@ -21,7 +21,7 @@ jobs:
   # below via outputs - never recomputed per-matrix-entry.
   test:
     name: Run test suite
-    uses: ./.github/workflows/ci.yml
+    uses: ./.github/workflows/test.yml
 
   prepare:
     name: Resolve branch + diff
