@@ -3,11 +3,26 @@ name: Release branch
 # Direct releases cut from a version branch itself. A push here means a PR
 # was merged straight into that release line (hotfix authored on-branch, or a
 # backport commit landed via the "Backport to release branches" workflow).
+#
+# `main` is included too: it is the unrestricted mainline trunk (not pinned to
+# any single major), so a push there also cuts a release - for whatever is
+# currently the highest version line in the repo - allowing patch, minor, or
+# major bumps.
 on:
   push:
     branches:
       - 'v[0-9]+'
       - 'v[0-9]+.[0-9]+'
+      - main
+  # Allows backport.yml to call this directly (via `gh workflow run`) right
+  # after a clean cherry-pick push, using the default GITHUB_TOKEN.
+  # workflow_dispatch is one of the few events GitHub always turns into a new
+  # run even when fired by GITHUB_TOKEN (unlike `push`, which is suppressed to
+  # prevent recursive runs) - see "Triggering a workflow from a workflow" in
+  # the GitHub Actions docs. `--ref <branch>` on dispatch sets github.ref to
+  # that branch, so every `github.ref_name` reference below keeps working
+  # unchanged regardless of which trigger fired.
+  workflow_dispatch:
 
 concurrency:
   group: release-${{ github.ref_name }}

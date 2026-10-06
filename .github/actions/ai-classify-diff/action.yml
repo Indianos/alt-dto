@@ -22,7 +22,7 @@ inputs:
     description: Release branch name (for prompt context only)
     required: true
   branch-type:
-    description: "floating-minor (vX, allows new minors) or locked-minor (vX.Y, patches only)"
+    description: "floating-minor (vX, allows new minors) or locked-minor (vX.Y, patches only) or mainline (main, patch/minor/major)"
     required: true
   api-key:
     description: API key for the AI provider
@@ -68,6 +68,8 @@ runs:
         rules="This repository follows semantic versioning (semver.org)."
         if [[ "${{ inputs.branch-type }}" == "locked-minor" ]]; then
           rules="$rules Branch '${{ inputs.branch }}' is a LOCKED MINOR release branch: it may only ever receive PATCH releases (bugfixes, docs, internal refactors, performance fixes that do not change public behavior). Any new feature or breaking change on this branch is a policy violation."
+        elif [[ "${{ inputs.branch-type }}" == "mainline" ]]; then
+          rules="$rules Branch '${{ inputs.branch }}' is the unrestricted MAINLINE trunk: it is not pinned to any fixed major version, so it may receive PATCH, MINOR, or MAJOR releases, including backwards-incompatible/breaking changes."
         else
           rules="$rules Branch '${{ inputs.branch }}' is a FLOATING MINOR release branch: it may receive PATCH releases (bugfixes) or MINOR releases (new, backwards-compatible features/additions to the public API). It must NEVER receive a MAJOR/breaking change, since the major version is fixed by the branch name."
         fi

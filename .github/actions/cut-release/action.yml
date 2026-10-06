@@ -11,7 +11,7 @@ inputs:
     required: true
   branch-type:
     required: true
-    description: floating-minor | locked-minor
+    description: floating-minor | locked-minor | mainline
   major:
     required: true
   minor:
@@ -55,8 +55,10 @@ runs:
         fi
 
         if [[ "$bump" == "major" || "$breaking" == "true" ]]; then
-          echo "::error::Rejected: this change is classified as a BREAKING/major change, which is never allowed on a release branch (major is fixed once a vX branch is cut). AI summary: ${{ inputs.ai-summary }}"
-          exit 1
+          if [[ "${{ inputs.branch-type }}" != "mainline" ]]; then
+            echo "::error::Rejected: this change is classified as a BREAKING/major change, which is never allowed on a release branch (major is fixed once a vX branch is cut). AI summary: ${{ inputs.ai-summary }}"
+            exit 1
+          fi
         fi
 
         if [[ "${{ inputs.branch-type }}" == "locked-minor" && "$bump" == "minor" ]]; then
@@ -80,12 +82,17 @@ runs:
           # First release on this line.
           if [[ "${{ inputs.branch-type }}" == "locked-minor" ]]; then
             next="v${major}.${minor}.0"
+          elif [[ "${{ inputs.branch-type }}" == "mainline" ]]; then
+            # No release exists anywhere in the repo yet.
+            next="v1.0.0"
           else
             next="v${major}.0.0"
           fi
         else
           IFS='.' read -r b_major b_minor b_patch <<< "${base_tag#v}"
-          if [[ "$bump" == "minor" ]]; then
+          if [[ "$bump" == "major" ]]; then
+            next="v$((b_major + 1)).0.0"
+          elif [[ "$bump" == "minor" ]]; then
             next="v${b_major}.$((b_minor + 1)).0"
           else
             next="v${b_major}.${b_minor}.$((b_patch + 1))"
