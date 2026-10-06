@@ -1,15 +1,16 @@
 name: Compute release diff
 description: >
-  Resolves a release-branch name into its semver line (floating-minor "vX" or
-  locked-minor "vX.Y"), finds the most recent tag already released on that
-  line, and materializes the diff between that tag and the current HEAD.
-  Centralized here so the (potentially large) diff/log is computed exactly
-  once and shared with every downstream job via outputs + an artifact,
-  instead of every matrix branch re-cloning and re-diffing independently.
+  Resolves a release-branch name into its semver line (floating-minor "vX",
+  locked-minor "vX.Y", or the unrestricted "mainline" for `main`), finds the
+  most recent tag already released on that line, and materializes the diff
+  between that tag and the current HEAD. Centralized here so the (potentially
+  large) diff/log is computed exactly once and shared with every downstream
+  job via outputs + an artifact, instead of every matrix branch re-cloning
+  and re-diffing independently.
 
 inputs:
   branch:
-    description: Release branch name, e.g. "v2" or "v2.1"
+    description: Release branch name, e.g. "v2", "v2.1", or "main"
     required: true
   head-ref:
     description: Commit/ref to diff up to
@@ -18,7 +19,7 @@ inputs:
 
 outputs:
   branch-type:
-    description: "floating-minor (vX) or locked-minor (vX.Y)"
+    description: "floating-minor (vX) or locked-minor (vX.Y) or mainline (main)"
     value: ${{ steps.resolve.outputs.branch-type }}
   major:
     value: ${{ steps.resolve.outputs.major }}
@@ -59,8 +60,16 @@ runs:
           echo "minor=$minor" >> "$GITHUB_OUTPUT"
           # Only patches under this exact major.minor.
           tag_pattern="^v${major}\.${minor}\.[0-9]+$"
+        elif [[ "$branch" == "main" ]]; then
+          # Mainline trunk: not pinned to any major. "The highest version" is
+          # whatever the greatest released tag across the whole repo is -
+          # main is free to bump patch, minor, or major off of it.
+          echo "branch-type=mainline" >> "$GITHUB_OUTPUT"
+          echo "major=" >> "$GITHUB_OUTPUT"
+          echo "minor=" >> "$GITHUB_OUTPUT"
+          tag_pattern="^v[0-9]+\.[0-9]+\.[0-9]+$"
         else
-          echo "::error::'$branch' does not match the vX or vX.Y release-branch pattern"
+          echo "::error::'$branch' does not match the vX, vX.Y release-branch pattern, or 'main'"
           exit 1
         fi
 

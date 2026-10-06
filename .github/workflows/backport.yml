@@ -2,11 +2,11 @@ name: Backport to release branches
 
 # When main moves forward, try to fast-forward every active release line with
 # the same change. We deliberately do NOT run AI classification here: a clean
-# cherry-pick is just pushed to the target branch, and that push re-triggers
-# `release.yml`, which is the single place that calls the AI and enforces
-# semver policy. This keeps the (expensive) AI call to at most one invocation
-# per branch that actually ends up with releasable content, run in parallel
-# across branches by GitHub's own concurrent workflow runs.
+# cherry-pick is just pushed to the target branch, and release.yml is then
+# dispatched directly for it, which is the single place that calls the AI
+# and enforces semver policy. This keeps the (expensive) AI call to at most
+# one invocation per branch that actually ends up with releasable content,
+# run in parallel across branches by GitHub's own concurrent workflow runs.
 on:
   push:
     branches:
@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   # Static/shared discovery, computed exactly once for every branch in the
@@ -96,6 +97,17 @@ jobs:
             echo "clean=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Push backport (triggers release.yml for this branch)
+      - name: Push backport
         if: steps.pick.outputs.clean == 'true'
         run: git push origin HEAD:refs/heads/${{ matrix.branch }}
+
+      - name: Trigger release workflow for this branch
+        # A GITHUB_TOKEN-authenticated push never fires other workflows
+        # (GitHub's anti-recursion safeguard), so the push above alone would
+        # NOT start release.yml. workflow_dispatch is explicitly exempted
+        # from that restriction, so we call it directly instead - no PAT
+        # needed, default GITHUB_TOKEN is sufficient.
+        if: steps.pick.outputs.clean == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run release.yml --ref "${{ matrix.branch }}"
