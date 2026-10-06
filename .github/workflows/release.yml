@@ -9,11 +9,11 @@ name: Release branch
 # currently the highest version line in the repo - allowing patch, minor, or
 # major bumps.
 on:
-  push:
-    branches:
-      - 'v[0-9]+'
-      - 'v[0-9]+.[0-9]+'
-      - main
+ # push:
+ #   branches:
+ #     - 'v[0-9]+'
+ #     - 'v[0-9]+.[0-9]+'
+ #     - main
   # Allows backport.yml to call this directly (via `gh workflow run`) right
   # after a clean cherry-pick push, using the default GITHUB_TOKEN.
   # workflow_dispatch is one of the few events GitHub always turns into a new

@@ -8,9 +8,10 @@ name: Backport to release branches
 # one invocation per branch that actually ends up with releasable content,
 # run in parallel across branches by GitHub's own concurrent workflow runs.
 on:
-  push:
-    branches:
-      - main
+#  push:
+#    branches:
+#      - main
+  workflow_dispatch:
 
 permissions:
   contents: write
