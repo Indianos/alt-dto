@@ -1,5 +1,5 @@
 {
-  "name": "Indianos/alt-dto",
+  "name": "indianos/alt-dto",
   "description": "Framework-agnostic DTO hydration and serialization library",
   "type": "library",
   "license": "MIT",
